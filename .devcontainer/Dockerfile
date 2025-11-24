@@ -1,4 +1,4 @@
-FROM go:1.24-alpine
+FROM mcr.microsoft.com/devcontainers/go:1-1.24
 
 # Tools useful for networking/WireGuard testing inside the container
 RUN apt-get update \

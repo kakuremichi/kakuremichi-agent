@@ -6,7 +6,9 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "golang.go"
+        "golang.go",
+        "Anthropic.claude-code",
+        "openai.chatgpt"
       ],
       "settings": {
         "go.useLanguageServer": true,
@@ -20,10 +22,6 @@
   "runArgs": [
     "--cap-add=NET_ADMIN",
     "--cap-add=SYS_MODULE"
-  ],
-  "mounts": [
-    "source=${localEnv:HOME}/.cache/go-build,target=/go/pkg/cache,type=bind",
-    "source=${localWorkspaceFolder}/.modcache,target=/go/pkg/mod,type=bind"
   ],
   "postCreateCommand": "go mod download",
   "remoteUser": "vscode"
