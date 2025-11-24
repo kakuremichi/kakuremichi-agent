@@ -1,0 +1,30 @@
+{
+  "name": "kakuremichi-agent",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.autoUpdate": true,
+        "gopls": {
+          "ui.semanticTokens": true
+        }
+      }
+    }
+  },
+  "runArgs": [
+    "--cap-add=NET_ADMIN",
+    "--cap-add=SYS_MODULE"
+  ],
+  "mounts": [
+    "source=${localEnv:HOME}/.cache/go-build,target=/go/pkg/cache,type=bind",
+    "source=${localWorkspaceFolder}/.modcache,target=/go/pkg/mod,type=bind"
+  ],
+  "postCreateCommand": "go mod download",
+  "remoteUser": "vscode"
+}
