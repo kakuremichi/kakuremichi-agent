@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,6 +16,7 @@ import (
 type Client struct {
 	cfg        *config.Config
 	conn       *websocket.Conn
+	connMu     sync.Mutex
 	ctx        context.Context
 	cancel     context.CancelFunc
 	publicKey  string // WireGuard public key
@@ -23,9 +25,14 @@ type Client struct {
 	// Channels
 	send chan []byte
 	recv chan []byte
+	done chan struct{}
 
 	// Callbacks
 	onConfigUpdate func(config AgentConfig)
+
+	// Reconnection
+	reconnecting bool
+	reconnectMu  sync.Mutex
 }
 
 // NewClient creates a new WebSocket client
@@ -40,11 +47,28 @@ func NewClient(cfg *config.Config, publicKey, privateKey string) *Client {
 		privateKey: privateKey,
 		send:       make(chan []byte, 256),
 		recv:       make(chan []byte, 256),
+		done:       make(chan struct{}),
 	}
 }
 
-// Connect establishes WebSocket connection to Control server
+// Connect establishes WebSocket connection to Control server with auto-reconnect
 func (c *Client) Connect() error {
+	// Initial connection
+	if err := c.connect(); err != nil {
+		return err
+	}
+
+	// Start reconnection monitor
+	go c.reconnectLoop()
+
+	return nil
+}
+
+// connect performs the actual connection
+func (c *Client) connect() error {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
 	slog.Info("Connecting to Control server", "url", c.cfg.ControlURL)
 
 	conn, _, err := websocket.DefaultDialer.Dial(c.cfg.ControlURL, nil)
@@ -57,8 +81,12 @@ func (c *Client) Connect() error {
 
 	// Send authentication message
 	if err := c.authenticate(); err != nil {
+		conn.Close()
 		return fmt.Errorf("authentication failed: %w", err)
 	}
+
+	// Reset done channel for new connection
+	c.done = make(chan struct{})
 
 	// Start message handlers
 	go c.readPump()
@@ -67,6 +95,56 @@ func (c *Client) Connect() error {
 	go c.heartbeat()
 
 	return nil
+}
+
+// reconnectLoop monitors connection and reconnects when needed
+func (c *Client) reconnectLoop() {
+	backoff := time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-c.done:
+			// Connection closed, attempt reconnect
+			c.reconnectMu.Lock()
+			if c.reconnecting {
+				c.reconnectMu.Unlock()
+				continue
+			}
+			c.reconnecting = true
+			c.reconnectMu.Unlock()
+
+			slog.Info("Connection lost, attempting to reconnect...", "backoff", backoff)
+
+			for {
+				select {
+				case <-c.ctx.Done():
+					return
+				case <-time.After(backoff):
+					// Try to reconnect
+					if err := c.connect(); err != nil {
+						slog.Warn("Reconnection failed", "error", err, "next_retry", backoff*2)
+						backoff *= 2
+						if backoff > maxBackoff {
+							backoff = maxBackoff
+						}
+						continue
+					}
+
+					// Success
+					slog.Info("Reconnected to Control server")
+					backoff = time.Second
+					c.reconnectMu.Lock()
+					c.reconnecting = false
+					c.reconnectMu.Unlock()
+					break
+				}
+				break
+			}
+		}
+	}
 }
 
 // authenticate sends authentication message
@@ -119,8 +197,7 @@ func (c *Client) authenticate() error {
 // readPump reads messages from WebSocket
 func (c *Client) readPump() {
 	defer func() {
-		c.conn.Close()
-		c.cancel()
+		c.signalDisconnect()
 	}()
 
 	for {
@@ -128,6 +205,8 @@ func (c *Client) readPump() {
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				slog.Error("WebSocket read error", "error", err)
+			} else {
+				slog.Info("WebSocket connection closed")
 			}
 			return
 		}
@@ -145,7 +224,7 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(54 * time.Second)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+		c.signalDisconnect()
 	}()
 
 	for {
@@ -156,14 +235,22 @@ func (c *Client) writePump() {
 				return
 			}
 
-			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			c.connMu.Lock()
+			err := c.conn.WriteMessage(websocket.TextMessage, message)
+			c.connMu.Unlock()
+
+			if err != nil {
 				slog.Error("WebSocket write error", "error", err)
 				return
 			}
 
 		case <-ticker.C:
 			// Keep-alive ping
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			c.connMu.Lock()
+			err := c.conn.WriteMessage(websocket.PingMessage, nil)
+			c.connMu.Unlock()
+
+			if err != nil {
 				return
 			}
 
@@ -173,14 +260,24 @@ func (c *Client) writePump() {
 	}
 }
 
+// signalDisconnect signals that the connection has been lost
+func (c *Client) signalDisconnect() {
+	select {
+	case c.done <- struct{}{}:
+	default:
+	}
+}
+
 // handleMessages processes received messages
 func (c *Client) handleMessages() {
+	slog.Info("Message handler started")
 	for {
 		select {
 		case msg := <-c.recv:
 			c.handleMessage(msg)
 
 		case <-c.ctx.Done():
+			slog.Info("Message handler stopped")
 			return
 		}
 	}
@@ -194,7 +291,7 @@ func (c *Client) handleMessage(data []byte) {
 		return
 	}
 
-	slog.Debug("Received message", "type", baseMsg.Type)
+	slog.Info("Received message from Control", "type", baseMsg.Type)
 
 	switch baseMsg.Type {
 	case TypePing:
@@ -223,7 +320,11 @@ func (c *Client) handlePing() {
 	}
 
 	data, _ := json.Marshal(pongMsg)
-	c.send <- data
+	select {
+	case c.send <- data:
+	default:
+		// Channel full, skip
+	}
 }
 
 // handleConfigUpdate processes configuration update
@@ -251,7 +352,11 @@ func (c *Client) handleConfigUpdate(data []byte) {
 	}
 
 	data, _ = json.Marshal(ackMsg)
-	c.send <- data
+	select {
+	case c.send <- data:
+	default:
+		// Channel full, skip
+	}
 }
 
 // heartbeat sends periodic status updates
@@ -271,7 +376,11 @@ func (c *Client) heartbeat() {
 			}
 
 			data, _ := json.Marshal(statusMsg)
-			c.send <- data
+			select {
+			case c.send <- data:
+			default:
+				// Channel full, skip this heartbeat
+			}
 
 		case <-c.ctx.Done():
 			return
@@ -287,9 +396,11 @@ func (c *Client) SetConfigUpdateCallback(callback func(AgentConfig)) {
 // Close closes the WebSocket connection
 func (c *Client) Close() {
 	c.cancel()
+	c.connMu.Lock()
 	if c.conn != nil {
 		c.conn.Close()
 	}
+	c.connMu.Unlock()
 }
 
 // Wait waits for the client to finish
