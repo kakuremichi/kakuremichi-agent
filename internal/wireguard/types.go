@@ -8,16 +8,15 @@ import (
 
 // GatewayPeer represents a Gateway peer configuration
 type GatewayPeer struct {
-	PublicKey string
-	Endpoint  string
-	AllowedIP string // Gateway's virtual IP in this agent's subnet
+	PublicKey  string
+	Endpoint   string
+	AllowedIPs []string // Gateway's virtual IPs (e.g., ["10.1.0.1/32", "10.2.0.1/32"])
 }
 
 // DeviceConfig represents WireGuard device configuration for Agent
 type DeviceConfig struct {
 	PrivateKey string
-	VirtualIP  string // Agent's virtual IP (e.g., 10.1.0.100)
-	Subnet     string // Agent's subnet (e.g., 10.1.0.0/24)
+	VirtualIPs []string // Agent's virtual IPs (one per tunnel, e.g., ["10.1.0.100", "10.2.0.100"])
 	Gateways   []GatewayPeer
 }
 
