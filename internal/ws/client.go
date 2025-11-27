@@ -291,7 +291,7 @@ func (c *Client) handleMessage(data []byte) {
 		return
 	}
 
-	slog.Info("Received message from Control", "type", baseMsg.Type)
+	slog.Debug("Received message from Control", "type", baseMsg.Type)
 
 	switch baseMsg.Type {
 	case TypePing:
