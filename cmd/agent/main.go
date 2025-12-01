@@ -62,27 +62,38 @@ func main() {
 		slog.Info("Received configuration update",
 			"gateways_count", len(config.Gateways),
 			"tunnels_count", len(config.Tunnels),
-			"virtual_ip", config.Agent.VirtualIP,
-			"subnet", config.Agent.Subnet,
 		)
+
+		// Extract virtual IPs from tunnels (one per tunnel)
+		var virtualIPs []string
+		for _, t := range config.Tunnels {
+			if t.AgentIP != "" {
+				virtualIPs = append(virtualIPs, t.AgentIP)
+			}
+		}
+
+		if len(virtualIPs) == 0 {
+			slog.Warn("No tunnels with AgentIP configured, skipping WireGuard setup")
+			return
+		}
+
+		// Build gateway peers with allowedIPs from config
+		var gateways []wireguard.GatewayPeer
+		for _, gw := range config.Gateways {
+			peer := wireguard.GatewayPeer{
+				PublicKey:  gw.WireguardPublicKey,
+				Endpoint:   gw.Endpoint,
+				AllowedIPs: gw.AllowedIPs,
+			}
+			gateways = append(gateways, peer)
+		}
 
 		// Initialize or update WireGuard device
 		if wgDevice == nil {
 			// First time initialization
-			var gateways []wireguard.GatewayPeer
-			for _, gw := range config.Gateways {
-				peer := wireguard.GatewayPeer{
-					PublicKey: gw.WireguardPublicKey,
-					Endpoint:  gw.Endpoint,
-					AllowedIP: "", // Will be set based on subnet
-				}
-				gateways = append(gateways, peer)
-			}
-
 			wgConfig := &wireguard.DeviceConfig{
-				PrivateKey: privateKey, // Use locally generated private key
-				VirtualIP:  config.Agent.VirtualIP,
-				Subnet:     config.Agent.Subnet,
+				PrivateKey: privateKey,
+				VirtualIPs: virtualIPs,
 				Gateways:   gateways,
 			}
 
@@ -91,20 +102,10 @@ func main() {
 				slog.Error("Failed to create WireGuard device", "error", err)
 			} else {
 				wgDevice = device
-				slog.Info("WireGuard device initialized", "public_key", wgDevice.PublicKey())
+				slog.Info("WireGuard device initialized", "public_key", wgDevice.PublicKey(), "virtual_ips", virtualIPs)
 			}
 		} else {
-			// Update existing device
-			var gateways []wireguard.GatewayPeer
-			for _, gw := range config.Gateways {
-				peer := wireguard.GatewayPeer{
-					PublicKey: gw.WireguardPublicKey,
-					Endpoint:  gw.Endpoint,
-					AllowedIP: "",
-				}
-				gateways = append(gateways, peer)
-			}
-
+			// Update existing device (gateway peers only for now)
 			if err := wgDevice.UpdateGateways(gateways); err != nil {
 				slog.Error("Failed to update WireGuard gateways", "error", err)
 			} else {
@@ -112,10 +113,11 @@ func main() {
 			}
 		}
 
-		// Initialize or update local proxy (only if WireGuard device was successfully created)
-		if localProxy == nil && config.Agent.VirtualIP != "" && wgDevice != nil {
-			// First time initialization - wait a bit for WireGuard to be ready
-			proxyAddr := config.Agent.VirtualIP + ":80"
+		// Initialize local proxy if not yet started (only if WireGuard device was successfully created)
+		// Note: The proxy listens on all virtual IPs via netstack
+		if localProxy == nil && wgDevice != nil && len(virtualIPs) > 0 {
+			// Use first virtual IP for the proxy address (netstack handles all IPs)
+			proxyAddr := virtualIPs[0] + ":80"
 			localProxy = proxy.NewLocalProxy(wgDevice.Net(), proxyAddr)
 
 			// Start proxy in background
@@ -125,7 +127,7 @@ func main() {
 				}
 			}()
 
-			slog.Info("Local proxy started", "addr", proxyAddr)
+			slog.Info("Local proxy started", "addr", proxyAddr, "virtual_ips", virtualIPs)
 		}
 
 		// Update tunnel mappings

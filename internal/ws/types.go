@@ -88,28 +88,34 @@ type ErrorMessage struct {
 	Error string `json:"error"`
 }
 
+// TunnelGatewayIP represents a gateway's IP for a specific tunnel
+type TunnelGatewayIP struct {
+	GatewayID string `json:"gatewayId"`
+	IP        string `json:"ip"`
+}
+
 // AgentConfig represents Agent configuration from Control
 type AgentConfig struct {
 	Agent struct {
-		ID                  string `json:"id"`
-		Name                string `json:"name"`
-		WireguardPublicKey  string `json:"wireguardPublicKey"`
-		WireguardPrivateKey string `json:"wireguardPrivateKey"`
-		VirtualIP           string `json:"virtualIp"`
-		Subnet              string `json:"subnet"`
-		Status              string `json:"status,omitempty"`
-	} `json:"agent"`
-	Gateways []struct {
 		ID                 string `json:"id"`
 		Name               string `json:"name"`
 		WireguardPublicKey string `json:"wireguardPublicKey"`
-		PublicIP           string `json:"publicIp"`
-		Endpoint           string `json:"endpoint"`
+	} `json:"agent"`
+	Gateways []struct {
+		ID                 string   `json:"id"`
+		Name               string   `json:"name"`
+		WireguardPublicKey string   `json:"wireguardPublicKey"`
+		PublicIP           string   `json:"publicIp"`
+		Endpoint           string   `json:"endpoint"`
+		AllowedIPs         []string `json:"allowedIPs"` // Gateway IPs for WireGuard peer (e.g., ["10.1.0.254/32", "10.2.0.254/32"])
 	} `json:"gateways"`
 	Tunnels []struct {
-		ID      string `json:"id"`
-		Domain  string `json:"domain"`
-		Target  string `json:"target"`
-		Enabled bool   `json:"enabled"`
+		ID         string            `json:"id"`
+		Domain     string            `json:"domain"`
+		Target     string            `json:"target"`
+		Enabled    bool              `json:"enabled"`
+		Subnet     string            `json:"subnet"`     // e.g., "10.1.0.0/24"
+		AgentIP    string            `json:"agentIp"`    // e.g., "10.1.0.2"
+		GatewayIPs []TunnelGatewayIP `json:"gatewayIps"` // All gateway IPs for this tunnel
 	} `json:"tunnels"`
 }
